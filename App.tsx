@@ -1,19 +1,6 @@
-
-import React, { useState, useMemo, useEffect } from 'react';
-import { Bike, Settings, ChevronUp, ChevronDown, BrainCircuit, Info, ChevronsRight, Mountain, User, TrendingUp, Wind } from 'lucide-react';
-import { 
-  DEFAULT_CONFIG, 
-  DEFAULT_CADENCE, 
-  MIN_CADENCE, 
-  MAX_CADENCE,
-  BIKE_WEIGHT_KG,
-  DEFAULT_RIDER_WEIGHT_KG,
-  GRAVITY,
-  AIR_DENSITY,
-  CRR,
-  CDA,
-  DRIVETRAIN_EFFICIENCY
-} from './constants';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { Bike, Settings, ChevronUp, ChevronDown, BrainCircuit, Info } from 'lucide-react';
+import { DEFAULT_CONFIG, DEFAULT_CADENCE, MIN_CADENCE, MAX_CADENCE } from './constants';
 import { getGearAdvice } from './services/geminiService';
 import { Speedometer } from './components/Speedometer';
 import { GearVisualizer } from './components/GearVisualizer';
@@ -23,21 +10,15 @@ import { AIAdviceResponse } from './types';
 // Tailwind needs to be loaded in index.html, assume it is present.
 
 const App: React.FC = () => {
-  // State - Drivetrain
+  // State
   const [cadence, setCadence] = useState<number>(DEFAULT_CADENCE);
-  const [frontIdx, setFrontIdx] = useState<number>(1); // Default to big ring (Index 1)
+  const [frontIdx, setFrontIdx] = useState<number>(1); // Default to big ring (52T is index 1)
   const [rearIdx, setRearIdx] = useState<number>(5); // Default to middle of cassette
 
-  // State - Physics
-  const [riderWeight, setRiderWeight] = useState<number>(DEFAULT_RIDER_WEIGHT_KG);
-  const [gradient, setGradient] = useState<number>(0); // Percentage
-  const [windKmh, setWindKmh] = useState<number>(0); // Positive = Headwind, Negative = Tailwind
-
-  // State - AI
   const [aiAdvice, setAiAdvice] = useState<AIAdviceResponse | null>(null);
   const [isLoadingAdvice, setIsLoadingAdvice] = useState<boolean>(false);
 
-  // Derived Values - Drivetrain
+  // Derived Values
   const frontTeeth = DEFAULT_CONFIG.chainrings[frontIdx];
   const rearTeeth = DEFAULT_CONFIG.cassette[rearIdx];
   const gearRatio = frontTeeth / rearTeeth;
@@ -47,45 +28,7 @@ const App: React.FC = () => {
     return (rpm * 60) * ratio * (DEFAULT_CONFIG.wheelCircumferenceMm / 1000000);
   };
 
-  const currentSpeedKmh = calculateSpeed(cadence, gearRatio);
-
-  // Power Calculation
-  const calculatePower = (speedKmh: number, slopePercent: number, weightKg: number, windSpeedKmh: number) => {
-    if (speedKmh === 0) return 0;
-
-    const speedMs = speedKmh / 3.6;
-    const slope = slopePercent / 100;
-    const totalMass = weightKg + BIKE_WEIGHT_KG;
-
-    // 1. Rolling Resistance Force = m * g * Crr
-    const fRolling = totalMass * GRAVITY * CRR;
-    const pRolling = fRolling * speedMs;
-
-    // 2. Gravity Force = m * g * sin(theta)
-    const fGravity = totalMass * GRAVITY * Math.sin(Math.atan(slope));
-    const pGravity = fGravity * speedMs;
-
-    // 3. Aerodynamic Drag
-    // Relative air speed = Ground Speed + Headwind Speed
-    // If Tailwind (negative windSpeedKmh), relative speed is lower.
-    const windMs = windSpeedKmh / 3.6;
-    const vAir = speedMs + windMs;
-    
-    // Drag Force = 0.5 * rho * CdA * vAir^2
-    // We preserve the sign of vAir to handle cases where tailwind is faster than bike (pushing the bike)
-    const fAir = 0.5 * AIR_DENSITY * CDA * Math.pow(Math.abs(vAir), 2) * Math.sign(vAir);
-    const pAir = fAir * speedMs;
-
-    const totalExternalPower = pRolling + pGravity + pAir;
-    
-    // If going downhill/tailwind fast enough that external forces are helping more than hindering
-    if (totalExternalPower < 0) return 0;
-
-    // Add drivetrain losses
-    return totalExternalPower / DRIVETRAIN_EFFICIENCY;
-  };
-
-  const currentPowerWatts = calculatePower(currentSpeedKmh, gradient, riderWeight, windKmh);
+  const currentSpeed = calculateSpeed(cadence, gearRatio);
 
   // Prepare chart data for the current front ring across all rear cogs
   const chartData = useMemo(() => {
@@ -99,35 +42,26 @@ const App: React.FC = () => {
   // Handler for AI Advice
   const fetchAdvice = async () => {
     setIsLoadingAdvice(true);
-    const data = await getGearAdvice(
-      frontTeeth, 
-      rearTeeth, 
-      cadence, 
-      currentSpeedKmh, 
-      gradient,
-      windKmh,
-      currentPowerWatts, 
-      riderWeight + BIKE_WEIGHT_KG
-    );
+    const data = await getGearAdvice(frontTeeth, rearTeeth, cadence, currentSpeed);
     setAiAdvice(data);
     setIsLoadingAdvice(false);
   };
 
-  // Reset advice when primary parameters change
+  // Reset advice when gears change to encourage re-checking, 
+  // but don't auto-fetch to save tokens and avoid spamming.
   useEffect(() => {
     setAiAdvice(null);
-  }, [frontTeeth, rearTeeth, cadence, gradient, riderWeight, windKmh]);
+  }, [frontTeeth, rearTeeth, cadence]);
 
   const handleRearShift = (direction: 'up' | 'down') => {
     if (direction === 'up' && rearIdx < DEFAULT_CONFIG.cassette.length - 1) {
-      setRearIdx(prev => prev + 1); // Index up means smaller cog (Harder)
+      setRearIdx(prev => prev + 1); // Index up means smaller cog usually in array logic, wait.
+      // Array: [34, ... 11]. Index 0 is 34 (Easy), Index 10 is 11 (Hard).
+      // "Shift Up" usually means harder gear (smaller cog).
+      // So Shift Up -> Index Increase.
     } else if (direction === 'down' && rearIdx > 0) {
-      setRearIdx(prev => prev - 1); // Index down means larger cog (Easier)
+      setRearIdx(prev => prev - 1);
     }
-  };
-
-  const handleRearSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setRearIdx(Number(e.target.value));
   };
 
   const handleFrontShift = () => {
@@ -136,16 +70,10 @@ const App: React.FC = () => {
 
   // Helper for gear description
   const getGearDescription = () => {
-    const maxRear = DEFAULT_CONFIG.cassette[0]; // 32T
-    const minRear = DEFAULT_CONFIG.cassette[DEFAULT_CONFIG.cassette.length - 1]; // 11T
-    const bigRing = 48;
-    const smallRing = 32;
-    
-    if (gradient > 5 && frontTeeth === bigRing) return "Grinding (Shift Down!)";
-    if (frontTeeth === smallRing && rearTeeth >= maxRear - 4) return "Climbing Gear";
-    if (frontTeeth === bigRing && rearTeeth <= minRear + 3) return "Speed/Sprint Gear";
-    if (frontTeeth === bigRing && rearTeeth >= 25) return "Cross-chain (Avoid)";
-    if (frontTeeth === smallRing && rearTeeth <= 13) return "Cross-chain (Avoid)";
+    if (frontTeeth === 34 && rearTeeth >= 30) return "Climbing Gear";
+    if (frontTeeth === 52 && rearTeeth <= 15) return "Speed/Sprint Gear";
+    if (frontTeeth === 52 && rearTeeth >= 27) return "Cross-chain (Avoid)";
+    if (frontTeeth === 34 && rearTeeth <= 13) return "Cross-chain (Avoid)";
     return "Cruising Gear";
   };
 
@@ -160,12 +88,12 @@ const App: React.FC = () => {
             </div>
             <div>
               <h1 className="text-xl font-bold tracking-tight">VeloRatio Pro</h1>
-              <p className="text-xs text-gray-500">Power & Gear Calculator</p>
+              <p className="text-xs text-gray-500">2x11 Drivetrain Calculator</p>
             </div>
           </div>
           <div className="hidden md:flex items-center gap-4 text-sm text-gray-400">
-             <span className="flex items-center gap-1"><Settings size={14} /> {BIKE_WEIGHT_KG}kg Bike</span>
-             <span className="bg-gray-800 px-2 py-1 rounded text-xs border border-gray-700">11-32T / 48-32T</span>
+             <span className="flex items-center gap-1"><Settings size={14} /> 700c / 25mm</span>
+             <span className="bg-gray-800 px-2 py-1 rounded text-xs border border-gray-700">Shimano 105 Spec</span>
           </div>
         </div>
       </header>
@@ -174,19 +102,13 @@ const App: React.FC = () => {
         
         {/* Top Section: Visualizer & Speed */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Speedometer 
-            speedKmh={currentSpeedKmh} 
-            cadence={cadence} 
-            ratio={gearRatio} 
-            powerWatts={currentPowerWatts}
-            gradient={gradient}
-          />
+          <Speedometer speedKmh={currentSpeed} cadence={cadence} ratio={gearRatio} />
           
           <div className="bg-gray-900/50 p-6 rounded-2xl border border-gray-800 flex flex-col justify-between">
             <div className="flex justify-between items-start mb-4">
               <h3 className="text-gray-400 font-medium">Gear Configuration</h3>
               <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                getGearDescription().includes('Avoid') || getGearDescription().includes('Grinding') ? 'bg-red-900/50 text-red-400' : 'bg-blue-900/50 text-blue-400'
+                getGearDescription().includes('Avoid') ? 'bg-red-900/50 text-red-400' : 'bg-blue-900/50 text-blue-400'
               }`}>
                 {getGearDescription()}
               </span>
@@ -210,92 +132,6 @@ const App: React.FC = () => {
               </div>
             </div>
           </div>
-        </div>
-
-        {/* Physics Inputs */}
-        <div className="bg-gray-800/80 p-6 rounded-2xl border border-gray-700">
-             <h3 className="text-gray-300 font-semibold mb-4 flex items-center gap-2">
-                 <Mountain size={18} />
-                 Physics Parameters
-             </h3>
-             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                 {/* Gradient Slider */}
-                 <div>
-                     <div className="flex justify-between items-center mb-2">
-                         <label htmlFor="gradient" className="text-sm text-gray-400 flex items-center gap-1">
-                             <TrendingUp size={14} /> Slope (Gradient)
-                         </label>
-                         <span className="text-white font-mono">{gradient}%</span>
-                     </div>
-                     <input
-                        type="range"
-                        id="gradient"
-                        min="-5"
-                        max="20"
-                        step="0.5"
-                        value={gradient}
-                        onChange={(e) => setGradient(Number(e.target.value))}
-                        className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                     />
-                     <div className="flex justify-between text-xs text-gray-600 mt-1">
-                         <span>-5%</span>
-                         <span>0%</span>
-                         <span>20%</span>
-                     </div>
-                 </div>
-
-                 {/* Rider Weight Slider */}
-                 <div>
-                     <div className="flex justify-between items-center mb-2">
-                         <label htmlFor="weight" className="text-sm text-gray-400 flex items-center gap-1">
-                             <User size={14} /> Rider Weight
-                         </label>
-                         <span className="text-white font-mono">{riderWeight} kg</span>
-                     </div>
-                     <input
-                        type="range"
-                        id="weight"
-                        min="40"
-                        max="120"
-                        step="1"
-                        value={riderWeight}
-                        onChange={(e) => setRiderWeight(Number(e.target.value))}
-                        className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-orange-500"
-                     />
-                     <div className="flex justify-between text-xs text-gray-600 mt-1">
-                         <span>40kg</span>
-                         <span>80kg</span>
-                         <span>120kg</span>
-                     </div>
-                 </div>
-
-                 {/* Wind Slider */}
-                 <div>
-                     <div className="flex justify-between items-center mb-2">
-                         <label htmlFor="wind" className="text-sm text-gray-400 flex items-center gap-1">
-                             <Wind size={14} /> Wind Speed
-                         </label>
-                         <span className={`font-mono text-xs ${windKmh > 0 ? 'text-red-400' : windKmh < 0 ? 'text-green-400' : 'text-gray-400'}`}>
-                            {windKmh > 0 ? 'Headwind' : windKmh < 0 ? 'Tailwind' : ''} {Math.abs(windKmh)} km/h
-                         </span>
-                     </div>
-                     <input
-                        type="range"
-                        id="wind"
-                        min="-30"
-                        max="30"
-                        step="1"
-                        value={windKmh}
-                        onChange={(e) => setWindKmh(Number(e.target.value))}
-                        className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-                     />
-                     <div className="flex justify-between text-xs text-gray-600 mt-1">
-                         <span>Tail -30</span>
-                         <span>0</span>
-                         <span>Head +30</span>
-                     </div>
-                 </div>
-             </div>
         </div>
 
         {/* Controls Section */}
@@ -336,44 +172,27 @@ const App: React.FC = () => {
                 onClick={handleFrontShift}
                 className="flex-1 bg-gray-800 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded transition-colors border border-gray-700"
               >
-                {frontTeeth === 48 ? 'Drop to Small (32T)' : 'Shift to Big (48T)'}
+                {frontTeeth === 52 ? 'Drop to Small (34T)' : 'Shift to Big (52T)'}
               </button>
             </div>
 
             {/* Rear Shifter */}
-            <div className="flex flex-col gap-2 bg-gray-900 p-3 rounded-xl border border-gray-800">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-gray-400 font-bold uppercase w-12">Rear</span>
-                <button 
-                  onClick={() => handleRearShift('down')}
-                  disabled={rearIdx === 0}
-                  className={`flex-1 flex items-center justify-center gap-1 bg-gray-800 py-3 px-1 rounded border border-gray-700 transition-all ${rearIdx === 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-700 hover:border-blue-500/50'}`}
-                >
-                  <ChevronDown size={18} />
-                </button>
-                <button 
-                  onClick={() => handleRearShift('up')}
-                  disabled={rearIdx === DEFAULT_CONFIG.cassette.length - 1}
-                  className={`flex-1 flex items-center justify-center gap-1 bg-gray-800 py-3 px-1 rounded border border-gray-700 transition-all ${rearIdx === DEFAULT_CONFIG.cassette.length - 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-700 hover:border-blue-500/50'}`}
-                >
-                  <ChevronUp size={18} />
-                </button>
-              </div>
-              
-              <div className="flex items-center gap-2 mt-1">
-                 <ChevronsRight size={14} className="text-gray-500 ml-1" />
-                 <select 
-                   value={rearIdx} 
-                   onChange={handleRearSelect}
-                   className="flex-1 bg-gray-800 text-white text-sm py-2 px-3 rounded border border-gray-700 focus:outline-none focus:border-blue-500 cursor-pointer"
-                 >
-                   {DEFAULT_CONFIG.cassette.map((teeth, idx) => (
-                     <option key={idx} value={idx}>
-                       Gear {11 - idx}: {teeth}T
-                     </option>
-                   ))}
-                 </select>
-              </div>
+            <div className="flex items-center justify-between bg-gray-900 p-3 rounded-xl border border-gray-800 gap-2">
+              <span className="text-xs text-gray-400 font-bold uppercase w-12">Rear</span>
+              <button 
+                onClick={() => handleRearShift('down')}
+                disabled={rearIdx === 0}
+                className={`flex-1 flex items-center justify-center gap-1 bg-gray-800 py-3 px-2 rounded border border-gray-700 transition-all ${rearIdx === 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-700 hover:border-blue-500/50'}`}
+              >
+                <ChevronDown size={18} /> Easy
+              </button>
+              <button 
+                onClick={() => handleRearShift('up')}
+                disabled={rearIdx === DEFAULT_CONFIG.cassette.length - 1}
+                className={`flex-1 flex items-center justify-center gap-1 bg-gray-800 py-3 px-2 rounded border border-gray-700 transition-all ${rearIdx === DEFAULT_CONFIG.cassette.length - 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-700 hover:border-blue-500/50'}`}
+              >
+                Hard <ChevronUp size={18} />
+              </button>
             </div>
           </div>
         </div>
@@ -385,7 +204,7 @@ const App: React.FC = () => {
             <span className="text-xs text-gray-500">at {cadence} RPM</span>
           </div>
           <p className="text-sm text-gray-400 mb-4">Visualizing the speed curve across the entire cassette for the current chainring.</p>
-          <GearChart data={chartData} currentSpeed={currentSpeedKmh} currentRearTeeth={rearTeeth} />
+          <GearChart data={chartData} currentSpeed={currentSpeed} currentRearTeeth={rearTeeth} />
         </div>
 
         {/* AI Coach Section */}
@@ -402,7 +221,7 @@ const App: React.FC = () => {
                 disabled={isLoadingAdvice}
                 className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-wait shadow-lg shadow-purple-900/50"
               >
-                {isLoadingAdvice ? 'Analyzing Telemetry...' : 'Analyze Power & Gearing'}
+                {isLoadingAdvice ? 'Analyzing Telemetry...' : 'Analyze Gear Ratio'}
               </button>
             </div>
 
@@ -425,7 +244,7 @@ const App: React.FC = () => {
               </div>
             ) : (
               <div className="text-gray-500 text-center py-6 border-t border-gray-800/50 mt-4 border-dashed">
-                <p>Tap "Analyze Power & Gearing" to get real-time coaching tips based on slope, wind, weight, and power.</p>
+                <p>Tap "Analyze Gear Ratio" to get real-time coaching tips based on your current setup.</p>
               </div>
             )}
           </div>

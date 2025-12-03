@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { AIAdviceResponse } from "../types";
 
@@ -8,30 +7,23 @@ export const getGearAdvice = async (
   frontTeeth: number,
   rearTeeth: number,
   cadence: number,
-  speedKmh: number,
-  gradient: number,
-  windKmh: number,
-  powerWatts: number,
-  totalWeight: number
+  speedKmh: number
 ): Promise<AIAdviceResponse> => {
   try {
     const modelId = "gemini-2.5-flash";
     const prompt = `
-      I am riding a road bike with a 2x11 setup (48/32T Front, 11-32T Rear).
+      I am riding a road bike with a 2x11 setup.
       Current Status:
       - Front Chainring: ${frontTeeth}T
       - Rear Cog: ${rearTeeth}T
       - Cadence: ${cadence} RPM
       - Speed: ${speedKmh.toFixed(1)} km/h
-      - Gradient (Slope): ${gradient}%
-      - Wind: ${windKmh > 0 ? `${windKmh} km/h Headwind` : windKmh < 0 ? `${Math.abs(windKmh)} km/h Tailwind` : 'Calm'}
-      - Est. Power Output: ${Math.round(powerWatts)} Watts
-      - Total System Weight: ${totalWeight} kg
 
       Analyze this specific gear combination and riding scenario.
-      1. Is this efficiently geared for the current gradient, wind, and power?
-      2. Am I likely cross-chaining?
-      3. Provide a specific cycling tip based on the power-to-weight effort and environmental resistance.
+      1. Is this efficiently geared?
+      2. Am I likely cross-chaining (big-big or small-small)?
+      3. What kind of terrain is this ratio best suited for (steep climb, flat sprint, recovery)?
+      4. Provide a 1-sentence pro tip.
 
       Return JSON matching this schema:
       {
